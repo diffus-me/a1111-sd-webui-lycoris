@@ -23,7 +23,7 @@ class ExtraNetworksPageLyCORIS(ui_extra_networks.ExtraNetworksPage):
                     self.metadata[name] = metadata
 
     def refresh(self):
-        lycoris.list_available_lycos(self.model_dir)
+        lycoris.list_available_lycos(model_dir=self.model_dir)
         self.refresh_metadata()
 
     def get_items_count(self):

@@ -1,4 +1,4 @@
-from typing import *
+from typing import Sized, Union, Dict, List
 import os, sys
 import re
 import glob
@@ -6,6 +6,8 @@ import glob
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from fastapi import Request
 
 from modules import shared, devices, sd_models, errors
 from lyco_logger import logger
@@ -48,16 +50,16 @@ def convert_diffusers_name_to_compvis(key, is_sd2):
         return True
 
     m = []
-    
+
     if match(m, re_unet_conv_in):
         return f'diffusion_model_input_blocks_0_0{m[0]}'
-    
+
     if match(m, re_unet_conv_out):
         return f'diffusion_model_out_2{m[0]}'
-    
+
     if match(m, re_unet_time_embed):
         return f"diffusion_model_time_embed_{m[0]*2-2}{m[1]}"
-    
+
     if match(m, re_unet_down_blocks):
         return f"diffusion_model_input_blocks_{1 + m[0] * 3 + m[1]}_1_{m[2]}"
 
@@ -240,14 +242,14 @@ class LycoKronModule:
         self.dim = None
         self.shape = None
         self.bias = None
-    
+
     @property
     def alpha(self):
         if self.w1a is None and self.w2a is None:
             return None
         else:
             return self._alpha
-    
+
     @alpha.setter
     def alpha(self, x):
         self._alpha = x
@@ -292,14 +294,14 @@ def load_lyco(name, filename):
     for key_diffusers, weight in sd.items():
         fullkey = convert_diffusers_name_to_compvis(key_diffusers, is_sd2)
         key, lyco_key = fullkey.split(".", 1)
-        
+
         sd_module = shared.sd_model.lyco_layer_mapping.get(key, None)
-        
+
         if sd_module is None:
             m = re_x_proj.match(key)
             if m:
                 sd_module = shared.sd_model.lyco_layer_mapping.get(m.group(1), None)
-        
+
         if sd_module is None:
             logger.warn(f'key failed to match: {key_diffusers}')
             keys_failed_to_match.append(key_diffusers)
@@ -313,11 +315,11 @@ def load_lyco(name, filename):
         if lyco_key == "alpha":
             lyco_module.alpha = weight.item()
             continue
-        
+
         if lyco_key == "scale":
             lyco_module.scale = weight.item()
             continue
-        
+
         if lyco_key == "diff":
             weight = weight.to(device=devices.cpu, dtype=devices.dtype)
             weight.requires_grad_(False)
@@ -325,7 +327,7 @@ def load_lyco(name, filename):
             lyco.modules[key] = lyco_module
             lyco_module.weight = weight
             continue
-        
+
         if 'bias_' in lyco_key:
             if lyco_module.bias is None:
                 lyco_module.bias = [None, None, None]
@@ -335,7 +337,7 @@ def load_lyco(name, filename):
                 lyco_module.bias[1] = weight
             elif 'bias_size' == lyco_key:
                 lyco_module.bias[2] = weight
-            
+
             if all((i is not None) for i in lyco_module.bias):
                 print('build bias')
                 lyco_module.bias = torch.sparse_coo_tensor(
@@ -345,7 +347,7 @@ def load_lyco(name, filename):
                 ).to(device=devices.cpu, dtype=devices.dtype)
                 lyco_module.bias.requires_grad_(False)
             continue
-        
+
         if lyco_key in CON_KEY:
             if (type(sd_module) == torch.nn.Linear
                 or type(sd_module) == torch.nn.modules.linear.NonDynamicallyQuantizableLinear
@@ -366,7 +368,7 @@ def load_lyco(name, filename):
                     module = torch.nn.Conv2d(weight.shape[1], weight.shape[0], (1, 1), bias=False)
             else:
                 assert False, f'Lyco layer {key_diffusers} matched a layer with unsupported type: {type(sd_module).__name__}'
-            
+
             if hasattr(sd_module, 'weight'):
                 lyco_module.shape = sd_module.weight.shape
             with torch.no_grad():
@@ -396,10 +398,10 @@ def load_lyco(name, filename):
                 lyco.modules[key] = lyco_module
             if hasattr(sd_module, 'weight'):
                 lyco_module.shape = sd_module.weight.shape
-            
+
             weight = weight.to(device=devices.cpu, dtype=devices.dtype)
             weight.requires_grad_(False)
-            
+
             if lyco_key == 'hada_w1_a':
                 lyco_module.w1a = weight
             elif lyco_key == 'hada_w1_b':
@@ -414,12 +416,12 @@ def load_lyco(name, filename):
                 lyco_module.t1 = weight
             elif lyco_key == 'hada_t2':
                 lyco_module.t2 = weight
-            
+
         elif lyco_key in IA3_KEY:
             if type(lyco_module) != IA3Module:
                 lyco_module = IA3Module()
                 lyco.modules[key] = lyco_module
-            
+
             if lyco_key == "weight":
                 lyco_module.w = weight.to(devices.device, dtype=devices.dtype)
             elif lyco_key == "on_input":
@@ -434,10 +436,10 @@ def load_lyco(name, filename):
                 lyco.modules[key] = lyco_module
             if hasattr(sd_module, 'weight'):
                 lyco_module.shape = sd_module.weight.shape
-            
+
             weight = weight.to(device=devices.cpu, dtype=devices.dtype)
             weight.requires_grad_(False)
-            
+
             if lyco_key == 'lokr_w1':
                 lyco_module.w1 = weight
             elif lyco_key == 'lokr_w1_a':
@@ -517,7 +519,7 @@ def rebuild_weight(module, orig_weight: torch.Tensor, dyn_dim: int=None) -> torc
     if module.__class__.__name__ == 'LycoUpDownModule':
         up = module.up_model.weight.to(orig_weight.device, dtype=orig_weight.dtype)
         down = module.down_model.weight.to(orig_weight.device, dtype=orig_weight.dtype)
-        
+
         output_shape = [up.size(0), down.size(1)]
         if (mid:=module.mid_model) is not None:
             # cp-decomposition
@@ -528,15 +530,15 @@ def rebuild_weight(module, orig_weight: torch.Tensor, dyn_dim: int=None) -> torc
             if len(down.shape) == 4:
                 output_shape += down.shape[2:]
             updown = _rebuild_conventional(up, down, output_shape, dyn_dim)
-        
+
     elif module.__class__.__name__ == 'LycoHadaModule':
         w1a = module.w1a.to(orig_weight.device, dtype=orig_weight.dtype)
         w1b = module.w1b.to(orig_weight.device, dtype=orig_weight.dtype)
         w2a = module.w2a.to(orig_weight.device, dtype=orig_weight.dtype)
         w2b = module.w2b.to(orig_weight.device, dtype=orig_weight.dtype)
-        
+
         output_shape = [w1a.size(0), w1b.size(1)]
-        
+
         if module.t1 is not None:
             output_shape = [w1a.size(1), w1b.size(1)]
             t1 = module.t1.to(orig_weight.device, dtype=orig_weight.dtype)
@@ -546,19 +548,19 @@ def rebuild_weight(module, orig_weight: torch.Tensor, dyn_dim: int=None) -> torc
             if len(w1b.shape) == 4:
                 output_shape += w1b.shape[2:]
             updown1 = _rebuild_conventional(w1a, w1b, output_shape)
-        
+
         if module.t2 is not None:
             t2 = module.t2.to(orig_weight.device, dtype=orig_weight.dtype)
             updown2 = make_weight_cp(t2, w2a, w2b)
         else:
             updown2 = _rebuild_conventional(w2a, w2b, output_shape)
-        
+
         updown = updown1 * updown2
-    
+
     elif module.__class__.__name__ == 'FullModule':
         output_shape = module.weight.shape
         updown = module.weight.to(orig_weight.device, dtype=orig_weight.dtype)
-    
+
     elif module.__class__.__name__ == 'IA3Module':
         output_shape = [module.w.size(0), orig_weight.size(1)]
         if module.on_input:
@@ -566,7 +568,7 @@ def rebuild_weight(module, orig_weight: torch.Tensor, dyn_dim: int=None) -> torc
         else:
             module.w = module.w.reshape(-1, 1)
         updown = orig_weight * module.w
-        
+
     elif module.__class__.__name__ == 'LycoKronModule':
         if module.w1 is not None:
             w1 = module.w1.to(orig_weight.device, dtype=orig_weight.dtype)
@@ -574,7 +576,7 @@ def rebuild_weight(module, orig_weight: torch.Tensor, dyn_dim: int=None) -> torc
             w1a = module.w1a.to(orig_weight.device, dtype=orig_weight.dtype)
             w1b = module.w1b.to(orig_weight.device, dtype=orig_weight.dtype)
             w1 = w1a @ w1b
-        
+
         if module.w2 is not None:
             w2 = module.w2.to(orig_weight.device, dtype=orig_weight.dtype)
         elif module.t2 is None:
@@ -586,15 +588,15 @@ def rebuild_weight(module, orig_weight: torch.Tensor, dyn_dim: int=None) -> torc
             w2a = module.w2a.to(orig_weight.device, dtype=orig_weight.dtype)
             w2b = module.w2b.to(orig_weight.device, dtype=orig_weight.dtype)
             w2 = make_weight_cp(t2, w2a, w2b)
-        
+
         output_shape = [w1.size(0)*w2.size(0), w1.size(1)*w2.size(1)]
         if len(orig_weight.shape) == 4:
             output_shape = orig_weight.shape
-        
+
         updown = make_kron(
             output_shape, w1, w2
         )
-    
+
     else:
         raise NotImplementedError(
             f"Unknown module type: {module.__class__.__name__}\n"
@@ -602,15 +604,15 @@ def rebuild_weight(module, orig_weight: torch.Tensor, dyn_dim: int=None) -> torc
             "'LycoUpDownModule', 'LycoHadaModule', 'FullModule', 'IA3Module', 'LycoKronModule'"
             "You may have other lyco extension that conflict with locon extension."
         )
-    
+
     if hasattr(module, 'bias') and module.bias != None:
         updown = updown.reshape(module.bias.shape)
         updown += module.bias.to(orig_weight.device, dtype=orig_weight.dtype)
         updown = updown.reshape(output_shape)
-    
+
     if len(output_shape) == 4:
         updown = updown.reshape(output_shape)
-    
+
     if orig_weight.size().numel() == updown.size().numel():
         updown = updown.reshape(orig_weight.shape)
     # print(torch.sum(updown))
@@ -628,7 +630,7 @@ def lyco_calc_updown(lyco, module, target, multiplier):
             dim = module.dim
         else:
             dim = None
-        
+
         scale = (
             module.scale if module.scale is not None
             else module.alpha / dim if dim is not None and module.alpha is not None
@@ -672,7 +674,7 @@ def lyco_apply_weights(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn.Mu
         #  * have outdated backed up weights
         if isinstance(self, torch.nn.MultiheadAttention):
             weights_backup = (
-                self.in_proj_weight.to(devices.cpu, copy=True), 
+                self.in_proj_weight.to(devices.cpu, copy=True),
                 self.out_proj.weight.to(devices.cpu, copy=True)
             )
         else:
@@ -694,7 +696,7 @@ def lyco_apply_weights(self: Union[torch.nn.Conv2d, torch.nn.Linear, torch.nn.Mu
         for lyco in loaded_lycos:
             module = lyco.modules.get(lyco_layer_name, None)
             multiplier = (
-                lyco.te_multiplier if 'transformer' in lyco_layer_name[:20] 
+                lyco.te_multiplier if 'transformer' in lyco_layer_name[:20]
                 else lyco.unet_multiplier
             )
             if module is not None and hasattr(self, 'weight'):
@@ -771,7 +773,7 @@ def lyco_MultiheadAttention_load_state_dict(self, *args, **kwargs):
     return torch.nn.MultiheadAttention_load_state_dict_before_lyco(self, *args, **kwargs)
 
 
-def list_available_lycos(model_dir=shared.cmd_opts.lyco_dir):
+def list_available_lycos(req: Request = None, model_dir=shared.cmd_opts.lyco_dir):
     available_lycos.clear()
 
     os.makedirs(model_dir, exist_ok=True)
