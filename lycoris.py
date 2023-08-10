@@ -778,19 +778,6 @@ def list_available_lycos(req: Request = None, model_dir=shared.cmd_opts.lyco_dir
 
     os.makedirs(model_dir, exist_ok=True)
 
-    candidates = \
-        glob.glob(os.path.join(model_dir, '**/*.pt'), recursive=True) + \
-        glob.glob(os.path.join(model_dir, '**/*.safetensors'), recursive=True) + \
-        glob.glob(os.path.join(model_dir, '**/*.ckpt'), recursive=True)
-
-    for filename in sorted(candidates, key=str.lower):
-        if os.path.isdir(filename):
-            continue
-
-        name = os.path.splitext(os.path.basename(filename))[0]
-
-        available_lycos[name] = LycoOnDisk(name, filename)
-
 
 available_lycos: Dict[str, LycoOnDisk] = {}
 loaded_lycos: List[LycoModule] = []
