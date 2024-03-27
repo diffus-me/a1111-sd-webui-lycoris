@@ -40,7 +40,8 @@ class ExtraNetworkLyCORIS(extra_networks.ExtraNetwork):
             unet_multipliers.append(unet_multiplier)
             dyn_dims.append(dyn_dim)
 
-        networks.load_networks(names, te_multipliers, unet_multipliers, dyn_dims)
+        lora_model_info = p.get_all_model_info().lora_models if names else {}
+        networks.load_networks(names, lora_model_info, te_multipliers, unet_multipliers, dyn_dims)
 
         if shared.opts.lyco_add_hashes_to_infotext:
             network_hashes = []

@@ -18,6 +18,7 @@ import torch
 from typing import Union
 
 from modules import shared, devices, sd_models, errors, scripts, sd_hijack
+from modules.model_info import ModelInfo
 import modules.textual_inversion.textual_inversion as textual_inversion
 
 from lyco_logger import logger
@@ -155,7 +156,7 @@ def load_network(name, network_on_disk):
     net = network.Network(name, network_on_disk)
     net.mtime = os.path.getmtime(network_on_disk.filename)
 
-    sd = sd_models.read_state_dict(network_on_disk.filename)
+    sd = sd_models.read_state_dict(network_on_disk)
 
     # this should not be needed but is here as an emergency fix for an unknown error people are experiencing in 1.2.0
     if not hasattr(shared.sd_model, 'network_layer_mapping'):
@@ -249,47 +250,58 @@ def load_network(name, network_on_disk):
 
 def purge_networks_from_memory():
     while len(networks_in_memory) > shared.opts.lyco_in_memory_limit and len(networks_in_memory) > 0:
-        name = next(iter(networks_in_memory))
-        networks_in_memory.pop(name, None)
+        sha256 = next(iter(networks_in_memory))
+        networks_in_memory.pop(sha256, None)
 
     devices.torch_gc()
 
 
-def load_networks(names, te_multipliers=None, unet_multipliers=None, dyn_dims=None):
-    logger.debug(names)
+def load_networks(
+    names,
+    lora_model_info: dict[str, ModelInfo],
+    te_multipliers=None,
+    unet_multipliers=None,
+    dyn_dims=None
+):
+    networks_on_disk = [
+        network.NetworkOnDisk.from_model_info(lora_model_info[name]) for name in names
+    ]
+    hashes = {item.hash for item in networks_on_disk}
+
     emb_db = sd_hijack.model_hijack.embedding_db
     already_loaded = {}
 
     for net in loaded_networks:
-        if net.name in names:
-            already_loaded[net.name] = net
+        if net.network_on_disk.hash in hashes:
+            already_loaded[net.network_on_disk.hash] = net
         for emb_name, embedding in net.bundle_embeddings.items():
             if embedding.loaded:
                 emb_db.register_embedding_by_name(None, shared.sd_model, emb_name)
 
     loaded_networks.clear()
 
-    networks_on_disk = [available_networks.get(name, None) if name.lower() in forbidden_network_aliases else available_network_aliases.get(name, None) for name in names]
-    if any(x is None for x in networks_on_disk):
-        list_available_networks()
+    # networks_on_disk = [available_networks.get(name, None) if name.lower() in forbidden_network_aliases else available_network_aliases.get(name, None) for name in names]
+    # if any(x is None for x in networks_on_disk):
+    #     list_available_networks()
 
-        networks_on_disk = [available_networks.get(name, None) if name.lower() in forbidden_network_aliases else available_network_aliases.get(name, None) for name in names]
+    #     networks_on_disk = [available_networks.get(name, None) if name.lower() in forbidden_network_aliases else available_network_aliases.get(name, None) for name in names]
 
     failed_to_load_networks = []
 
     for i, (network_on_disk, name) in enumerate(zip(networks_on_disk, names)):
-        net = already_loaded.get(name, None)
+        sha256 = network_on_disk.hash
+        net = already_loaded.get(sha256, None)
 
         if network_on_disk is not None:
             if net is None:
-                net = networks_in_memory.get(name)
+                net = networks_in_memory.get(sha256)
 
             if net is None or os.path.getmtime(network_on_disk.filename) > net.mtime:
                 try:
                     net = load_network(name, network_on_disk)
 
-                    networks_in_memory.pop(name, None)
-                    networks_in_memory[name] = net
+                    networks_in_memory.pop(sha256, None)
+                    networks_in_memory[sha256] = net
                 except Exception as e:
                     errors.display(e, f"loading network {network_on_disk.filename}")
                     continue
@@ -306,6 +318,7 @@ def load_networks(names, te_multipliers=None, unet_multipliers=None, dyn_dims=No
         net.te_multiplier = te_multipliers[i] if te_multipliers else 1.0
         net.unet_multiplier = unet_multipliers[i] if unet_multipliers else 1.0
         net.dyn_dim = dyn_dims[i] if dyn_dims else 1.0
+        net.network_on_disk = network_on_disk
         loaded_networks.append(net)
 
         for emb_name, embedding in net.bundle_embeddings.items():
