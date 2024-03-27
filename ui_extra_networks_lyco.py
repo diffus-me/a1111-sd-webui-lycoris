@@ -11,9 +11,14 @@ from l_ui_edit_user_metadata import LoraUserMetadataEditor
 class ExtraNetworksPageLyCORIS(ui_extra_networks.ExtraNetworksPage):
     def __init__(self):
         super().__init__('LyCORIS')
+        self.min_model_size_mb = 1
+        self.max_model_size_mb = 2e3
 
     def refresh(self):
         networks.list_available_networks()
+
+    def get_items_count(self):
+         return len(networks.available_networks)
 
     def create_item(self, name, index=None, enable_filter=True):
         lora_on_disk = networks.available_networks.get(name)
